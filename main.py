@@ -1,8 +1,7 @@
 import os
-
 import psycopg2
 import redis
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 app = FastAPI(title="KT: Контейнеризация и автоматический деплой")
 
@@ -25,6 +24,11 @@ def check_redis() -> bool:
     )
     return bool(client.ping())
 
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/app_db")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+
 
 @app.get("/")
 def root():
@@ -32,13 +36,23 @@ def root():
 
 
 @app.get("/health")
-def health():
-    results = {}
-    for service, check in (("database", check_database), ("redis", check_redis)):
-        try:
-            results[service] = "ok" if check() else "error"
-        except Exception:
-            results[service] = "error"
+def health_check():
+    status = {"app": "ok", "db": "error", "redis": "error"}
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.close()
+        status["db"] = "connected"
+    except Exception as e:
+        status["db_error"] = str(e)
 
-    status = "ok" if all(value == "ok" for value in results.values()) else "error"
-    return {"status": status, "services": results}
+    try:
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, socket_connect_timeout=2)
+        if r.ping():
+            status["redis"] = "connected"
+    except Exception as e:
+        status["redis_error"] = str(e)
+
+    if status["db"] != "connected" or status["redis"] != "connected":
+        raise HTTPException(status_code=503, detail=status)
+        
+    return status
